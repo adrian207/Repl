@@ -17,18 +17,18 @@ This index provides a comprehensive guide to all available documentation for the
 ## Quick Start
 
 **New User?** Start here:
-1. Read [PROJECT-COMPLETE.md](#1-project-completem) (Getting started guide)
-2. Review [README-ADReplicationManager.md](#2-readme-adreplicationmanagermd) (Feature overview)
-3. Run [Test-ADReplManager.ps1](#11-test-adreplmanagerps1) (Validate installation)
+1. Read [docs/PROJECT-COMPLETE.md](PROJECT-COMPLETE.md) (Getting started guide)
+2. Review [README.md](../README.md) (Feature overview)
+3. Run [Test-ADReplManager.ps1](../Test-ADReplManager.ps1) (Validate installation)
 
 **Migrating from v2.0?**
-1. Read [MIGRATION-GUIDE.md](#5-migration-guidemd)
-2. Review [BEFORE-AFTER-COMPARISON.md](#6-before-after-comparisonmd)
-3. Follow [REFACTORING-SUMMARY.md](#4-refactoring-summarymd)
+1. Read [docs/MIGRATION-GUIDE.md](MIGRATION-GUIDE.md)
+2. Review [docs/BEFORE-AFTER-COMPARISON.md](BEFORE-AFTER-COMPARISON.md)
+3. Follow [docs/REFACTORING-SUMMARY.md](REFACTORING-SUMMARY.md)
 
 **Having Issues?**
-1. Check [TROUBLESHOOTING-GUIDE.md](#10-troubleshooting-guidemd)
-2. Review [OPERATIONS-MANUAL.md](#9-operations-manualmd) for SOPs
+1. Check [docs/TROUBLESHOOTING-GUIDE.md](TROUBLESHOOTING-GUIDE.md)
+2. Review [docs/OPERATIONS-MANUAL.md](OPERATIONS-MANUAL.md) for SOPs
 
 ---
 
