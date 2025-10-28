@@ -3,12 +3,6 @@
 # Note: Admin rights recommended for full functionality, but not strictly required for read-only audit mode
 
 <#
-.NOTES
-    Optimized for PowerShell 7.5.4+ with enhanced parallel processing and retry logic.
-    Falls back gracefully to PowerShell 5.1 with serial processing.
-#>
-
-<#
 .SYNOPSIS
     Advanced Active Directory Replication Management Tool with Multi-Mode Operation
     
@@ -24,6 +18,8 @@
     - JSON summary for CI/CD integration
     - Audit trail with optional transcript logging
     - Consolidated reporting (CSV, HTML, JSON)
+    - Auto-Healing with policy-based repairs and rollback (v3.2)
+    - Delta Mode for intelligent caching and faster monitoring (v3.3)
 
 .AUTHOR
     Adrian Johnson <adrian207@gmail.com>
@@ -39,6 +35,11 @@
 
 .LICENSE
     MIT License
+    
+.NOTES
+    Optimized for PowerShell 7.5.4+ with enhanced parallel processing and retry logic.
+    Falls back gracefully to PowerShell 5.1 with serial processing.
+    Requires: PowerShell 5.1+, RSAT-AD-PowerShell, Domain Admin rights (recommended)
     
 .PARAMETER Mode
     Operation mode. Default: Audit
@@ -89,10 +90,15 @@
     
     Preview all actions without executing (WhatIf support)
     
-.NOTES
-    Author: Consolidated from AD-Repl-Audit.ps1 and AD-ReplicationRepair.ps1
-    Version: 3.3.0
-    Requires: PowerShell 5.1+, RSAT-AD-PowerShell, Domain Admin rights
+.EXAMPLE
+    .\Invoke-ADReplicationManager.ps1 -Mode Audit -Scope Forest -DeltaMode -DeltaThresholdMinutes 120
+    
+    Delta mode: Only check DCs that had issues in the last 120 minutes (faster monitoring)
+    
+.EXAMPLE
+    .\Invoke-ADReplicationManager.ps1 -Mode Repair -DomainControllers DC01,DC02 -AutoHeal -HealingPolicy Moderate
+    
+    Auto-healing mode with moderate policy (automatic repairs with safety controls)
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
