@@ -29,7 +29,7 @@
     Adrian Johnson <adrian207@gmail.com>
 
 .VERSION
-    3.2.0
+    3.3.0
 
 .DATE
     October 28, 2025
@@ -91,7 +91,7 @@
     
 .NOTES
     Author: Consolidated from AD-Repl-Audit.ps1 and AD-ReplicationRepair.ps1
-    Version: 3.2.0
+    Version: 3.3.0
     Requires: PowerShell 5.1+, RSAT-AD-PowerShell, Domain Admin rights
 #>
 
@@ -199,7 +199,21 @@ param(
     
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 60)]
-    [int]$HealingCooldownMinutes = 15
+    [int]$HealingCooldownMinutes = 15,
+    
+    # Delta Mode Parameters
+    [Parameter(Mandatory = $false)]
+    [switch]$DeltaMode,
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 1440)]
+    [int]$DeltaThresholdMinutes = 60,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$DeltaCachePath = "$env:ProgramData\ADReplicationManager\Cache",
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceFull
 )
 
 # ============================================================================
@@ -1467,6 +1481,196 @@ function Get-HealingStatistics {
     return $stats
 }
 
+function Get-DeltaCache {
+    <#
+    .SYNOPSIS
+        Retrieves cached information about DCs with previous issues.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath,
+        
+        [Parameter(Mandatory = $true)]
+        [int]$ThresholdMinutes
+    )
+    
+    $cacheFile = Join-Path $CachePath "delta-cache.json"
+    
+    if (-not (Test-Path $cacheFile)) {
+        Write-RepairLog "No delta cache found - will perform full scan" -Level Information
+        return $null
+    }
+    
+    try {
+        $cache = Get-Content $cacheFile -Raw | ConvertFrom-Json
+        $cacheAge = (Get-Date) - [DateTime]$cache.Timestamp
+        
+        if ($cacheAge.TotalMinutes -gt $ThresholdMinutes) {
+            Write-RepairLog "Delta cache expired ($([Math]::Round($cacheAge.TotalMinutes, 1)) minutes old, threshold: $ThresholdMinutes) - will perform full scan" -Level Information
+            return $null
+        }
+        
+        Write-RepairLog "Delta cache valid (age: $([Math]::Round($cacheAge.TotalMinutes, 1)) minutes)" -Level Information
+        return $cache
+    }
+    catch {
+        Write-RepairLog "Failed to read delta cache: $_ - will perform full scan" -Level Warning
+        return $null
+    }
+}
+
+function Save-DeltaCache {
+    <#
+    .SYNOPSIS
+        Saves current execution data to delta cache for next run.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ExecutionData,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath
+    )
+    
+    try {
+        # Ensure directory exists
+        if (-not (Test-Path $CachePath)) {
+            New-Item -Path $CachePath -ItemType Directory -Force | Out-Null
+        }
+        
+        $cacheFile = Join-Path $CachePath "delta-cache.json"
+        
+        # Identify DCs with issues
+        $degradedDCs = @($ExecutionData.Snapshots | Where-Object { $_.Status -eq 'Degraded' } | Select-Object -ExpandProperty DC)
+        $unreachableDCs = @($ExecutionData.Snapshots | Where-Object { $_.Status -eq 'Unreachable' } | Select-Object -ExpandProperty DC)
+        $allIssueDCs = @($ExecutionData.Issues | Select-Object -ExpandProperty DC -Unique)
+        
+        # Combine and deduplicate
+        $targetDCs = ($degradedDCs + $unreachableDCs + $allIssueDCs) | Select-Object -Unique
+        
+        $cache = @{
+            Timestamp = Get-Date -Format 'o'
+            TotalDCsScanned = $ExecutionData.Snapshots.Count
+            DegradedDCs = $degradedDCs
+            UnreachableDCs = $unreachableDCs
+            AllIssueDCs = $allIssueDCs
+            TargetDCsForNextRun = $targetDCs
+            IssueCount = $ExecutionData.Issues.Count
+            Mode = $ExecutionData.Mode
+        }
+        
+        $cache | ConvertTo-Json -Depth 5 | Out-File $cacheFile -Encoding UTF8
+        
+        Write-RepairLog "Delta cache saved: $($targetDCs.Count) DCs with issues will be checked on next delta run" -Level Information
+        
+        # Cleanup old cache files
+        Get-ChildItem $CachePath -Filter "delta-cache-*.json" |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+            
+        return $targetDCs.Count
+    }
+    catch {
+        Write-RepairLog "Failed to save delta cache: $_" -Level Warning
+        return 0
+    }
+}
+
+function Get-DeltaTargetDCs {
+    <#
+    .SYNOPSIS
+        Determines which DCs to check based on delta mode settings.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$AllDCs,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath,
+        
+        [Parameter(Mandatory = $true)]
+        [int]$ThresholdMinutes,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$ForceFull
+    )
+    
+    if ($ForceFull) {
+        Write-RepairLog "ForceFull specified - scanning all $($AllDCs.Count) DCs" -Level Information
+        return @{
+            TargetDCs = $AllDCs
+            Mode = 'Full'
+            Reason = 'ForceFull parameter specified'
+            CacheUsed = $false
+        }
+    }
+    
+    $cache = Get-DeltaCache -CachePath $CachePath -ThresholdMinutes $ThresholdMinutes
+    
+    if (-not $cache) {
+        return @{
+            TargetDCs = $AllDCs
+            Mode = 'Full'
+            Reason = 'No valid cache available'
+            CacheUsed = $false
+        }
+    }
+    
+    # Get DCs from cache
+    $cachedDCs = $cache.TargetDCsForNextRun
+    
+    if ($cachedDCs.Count -eq 0) {
+        Write-RepairLog "Previous run had no issues - scanning all DCs to confirm health" -Level Information
+        return @{
+            TargetDCs = $AllDCs
+            Mode = 'Full'
+            Reason = 'Previous run had no issues'
+            CacheUsed = $true
+            PreviousScan = @{
+                Timestamp = $cache.Timestamp
+                IssueCount = 0
+            }
+        }
+    }
+    
+    # Filter to DCs that still exist in current scope
+    $targetDCs = $cachedDCs | Where-Object { $_ -in $AllDCs }
+    
+    if ($targetDCs.Count -eq 0) {
+        Write-RepairLog "No cached DCs match current scope - performing full scan" -Level Warning
+        return @{
+            TargetDCs = $AllDCs
+            Mode = 'Full'
+            Reason = 'Cached DCs not in current scope'
+            CacheUsed = $true
+        }
+    }
+    
+    $savedCount = $AllDCs.Count - $targetDCs.Count
+    $savedPercent = [Math]::Round(($savedCount / $AllDCs.Count) * 100, 1)
+    
+    Write-RepairLog "Delta mode: Checking $($targetDCs.Count) DCs (skipping $savedCount DCs, $savedPercent% reduction)" -Level Information
+    
+    return @{
+        TargetDCs = $targetDCs
+        Mode = 'Delta'
+        Reason = "Previous issues on $($targetDCs.Count) DCs"
+        CacheUsed = $true
+        PreviousScan = @{
+            Timestamp = $cache.Timestamp
+            TotalDCs = $cache.TotalDCsScanned
+            IssueCount = $cache.IssueCount
+        }
+        PerformanceGain = @{
+            DCsSkipped = $savedCount
+            PercentReduction = $savedPercent
+        }
+    }
+}
+
 function Invoke-ReplicationFix {
     <#
     .SYNOPSIS
@@ -1782,7 +1986,7 @@ try {
         Write-RepairLog "Audit trail enabled: $transcriptPath" -Level Information
     }
     
-    Write-RepairLog "=== AD Replication Manager v3.2.0 ===" -Level Information
+    Write-RepairLog "=== AD Replication Manager v3.3.0 ===" -Level Information
     Write-RepairLog "Mode: $Mode | Scope: $Scope | Throttle: $Throttle" -Level Information
     
     # Pre-flight checks
@@ -1796,13 +2000,37 @@ try {
     }
     
     # Resolve target DCs
-    $targetDCs = Resolve-ScopeToDCs -Scope $Scope -ExplicitDCs $DomainControllers -Domain $DomainName
-    Write-RepairLog "Target DCs resolved: $($targetDCs.Count)" -Level Information
+    $allDCs = Resolve-ScopeToDCs -Scope $Scope -ExplicitDCs $DomainControllers -Domain $DomainName
+    Write-RepairLog "Scope resolution: $($allDCs.Count) DCs in scope" -Level Information
+    
+    # Delta Mode: Filter to DCs with previous issues
+    $deltaResult = $null
+    if ($DeltaMode) {
+        Write-RepairLog "Delta Mode enabled (threshold: $DeltaThresholdMinutes minutes)" -Level Information
+        
+        $deltaResult = Get-DeltaTargetDCs -AllDCs $allDCs -CachePath $DeltaCachePath `
+            -ThresholdMinutes $DeltaThresholdMinutes -ForceFull:$ForceFull
+        
+        $targetDCs = $deltaResult.TargetDCs
+        
+        Write-RepairLog "Delta Mode: $($deltaResult.Mode) scan - $($deltaResult.Reason)" -Level Information
+        
+        if ($deltaResult.Mode -eq 'Delta') {
+            Write-RepairLog "Performance gain: Skipping $($deltaResult.PerformanceGain.DCsSkipped) DCs ($($deltaResult.PerformanceGain.PercentReduction)% reduction)" -Level Information
+        }
+    }
+    else {
+        $targetDCs = $allDCs
+    }
+    
+    Write-RepairLog "Target DCs for execution: $($targetDCs.Count)" -Level Information
     
     # Data collection structure
     $executionData = @{
         Mode            = $Mode
         Scope           = $Scope
+        DeltaMode       = $DeltaMode
+        DeltaResult     = $deltaResult
         Snapshots       = @()
         Issues          = @()
         RepairActions   = @()
@@ -1991,6 +2219,13 @@ try {
         elseif ($EmailTo -and -not $SmtpServer) {
             Write-RepairLog "Email notification skipped: SmtpServer parameter required" -Level Warning
         }
+    }
+    
+    # Save Delta Cache for next run (only in Audit or AuditRepairVerify modes)
+    if ($DeltaMode -and $Mode -ne 'Verify') {
+        Write-RepairLog "Saving delta cache for next run..." -Level Verbose
+        $cachedCount = Save-DeltaCache -ExecutionData $executionData -CachePath $DeltaCachePath
+        Write-RepairLog "Delta cache saved: $cachedCount DCs will be prioritized on next delta run" -Level Information
     }
 }
 catch {
