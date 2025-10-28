@@ -1,12 +1,13 @@
 <div align="center">
 
-# 🔄 AD Replication Manager v3.0
+# 🔄 AD Replication Manager v3.1
 
 [![PowerShell Version](https://img.shields.io/badge/PowerShell-5.1%2B%20%7C%207%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20Server-blue.svg)](https://www.microsoft.com/windows-server)
-[![Code Size](https://img.shields.io/badge/Code%20Size-900%20lines-brightgreen.svg)](#performance-benchmarks)
+[![Code Size](https://img.shields.io/badge/Code%20Size-1500%20lines-brightgreen.svg)](#performance-benchmarks)
 [![Reduction](https://img.shields.io/badge/Code%20Reduction-72%25-success.svg)](#what-changed-migration-from-v20--v30)
+[![New Features](https://img.shields.io/badge/v3.1-Slack%20%7C%20Teams%20%7C%20Health%20Score-blue.svg)](#-whats-new-in-v31)
 
 **Enterprise-grade Active Directory replication management tool**  
 Audit • Repair • Verify • Monitor
@@ -109,7 +110,63 @@ Audit • Repair • Verify • Monitor
 
 ---
 
-## 🆕 What's New in v3.0
+## 🆕 What's New in v3.1
+
+### 🚀 Three Powerful New Features!
+
+<table>
+<tr>
+<td width="33%">
+
+#### 📬 Slack/Teams Integration
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -Mode Audit `
+    -Scope Forest `
+    -SlackWebhook "https://..." `
+    -TeamsWebhook "https://..."
+```
+**Get instant alerts** with rich formatting, emojis, and actionable data directly in your team channels!
+
+</td>
+<td width="33%">
+
+#### ⏰ Scheduled Task Auto-Setup
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -CreateScheduledTask `
+    -TaskSchedule Daily `
+    -EmailTo "admin@company.com"
+```
+**One command** to create a fully automated monitoring task - no manual configuration needed!
+
+</td>
+<td width="33%">
+
+#### 📊 Health Score & Trends
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -Mode Audit `
+    -EnableHealthScore `
+    -HealthHistoryPath "C:\Reports"
+```
+**0-100 score** with letter grades (A-F) + historical CSV tracking for trend analysis!
+
+</td>
+</tr>
+</table>
+
+### ✨ Benefits
+
+- **Proactive Monitoring** - Get notified before users complain
+- **Zero Config** - Automated task setup in seconds
+- **Trend Analysis** - Track AD health over time (daily/weekly/monthly)
+- **Team Collaboration** - Share alerts in Slack/Teams channels
+- **Email Alerts** - Optional SMTP notifications with severity-based sending
+
+---
+
+## 📚 What's New in v3.0
 
 <details open>
 <summary><b>1. Quality Improvements</b></summary>

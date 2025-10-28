@@ -29,7 +29,7 @@
     Adrian Johnson <adrian207@gmail.com>
 
 .VERSION
-    3.0
+    3.1.0
 
 .DATE
     October 28, 2025
@@ -91,7 +91,7 @@
     
 .NOTES
     Author: Consolidated from AD-Repl-Audit.ps1 and AD-ReplicationRepair.ps1
-    Version: 3.0
+    Version: 3.1.0
     Requires: PowerShell 5.1+, RSAT-AD-PowerShell, Domain Admin rights
 #>
 
@@ -136,8 +136,129 @@ param(
     [int]$Timeout = 300,
     
     [Parameter(Mandatory = $false)]
-    [switch]$FastMode
+    [switch]$FastMode,
+    
+    # Notification Parameters
+    [Parameter(Mandatory = $false)]
+    [string]$SlackWebhook,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$TeamsWebhook,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$EmailTo,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$EmailFrom = "ADReplication@company.com",
+    
+    [Parameter(Mandatory = $false)]
+    [string]$SmtpServer,
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('OnError', 'OnIssues', 'Always', 'Never')]
+    [string]$EmailNotification = 'OnIssues',
+    
+    # Scheduled Task Parameters
+    [Parameter(Mandatory = $false)]
+    [switch]$CreateScheduledTask,
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Hourly', 'Every4Hours', 'Daily', 'Weekly')]
+    [string]$TaskSchedule = 'Daily',
+    
+    [Parameter(Mandatory = $false)]
+    [string]$TaskName = "AD Replication Health Check",
+    
+    [Parameter(Mandatory = $false)]
+    [string]$TaskTime = "02:00",
+    
+    # Health Score Parameters
+    [Parameter(Mandatory = $false)]
+    [switch]$EnableHealthScore,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$HealthHistoryPath = "$env:ProgramData\ADReplicationManager\History"
 )
+
+# ============================================================================
+# SCHEDULED TASK CREATION (Exit Early)
+# ============================================================================
+
+if ($CreateScheduledTask) {
+    Write-Information "Creating scheduled task: $TaskName" -InformationAction Continue
+    
+    # Build the command arguments
+    $scriptPath = $PSCommandPath
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode $Mode -Scope $Scope"
+    
+    if ($DomainControllers.Count -gt 0) {
+        $dcList = $DomainControllers -join ','
+        $arguments += " -DomainControllers $dcList"
+    }
+    
+    if ($FastMode) { $arguments += " -FastMode" }
+    if ($AutoRepair) { $arguments += " -AutoRepair" }
+    if ($AuditTrail) { $arguments += " -AuditTrail" }
+    if ($EnableHealthScore) { $arguments += " -EnableHealthScore" }
+    if ($Throttle -ne 8) { $arguments += " -Throttle $Throttle" }
+    if ($OutputPath) { $arguments += " -OutputPath `"$OutputPath`"" }
+    if ($SlackWebhook) { $arguments += " -SlackWebhook `"$SlackWebhook`"" }
+    if ($TeamsWebhook) { $arguments += " -TeamsWebhook `"$TeamsWebhook`"" }
+    if ($EmailTo) { 
+        $arguments += " -EmailTo `"$EmailTo`""
+        if ($SmtpServer) { $arguments += " -SmtpServer `"$SmtpServer`"" }
+        if ($EmailFrom) { $arguments += " -EmailFrom `"$EmailFrom`"" }
+        $arguments += " -EmailNotification $EmailNotification"
+    }
+    
+    try {
+        # Create the action
+        $action = New-ScheduledTaskAction -Execute "pwsh.exe" -Argument $arguments
+        
+        # Create the trigger based on schedule
+        $trigger = switch ($TaskSchedule) {
+            'Hourly' {
+                New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([TimeSpan]::MaxValue)
+            }
+            'Every4Hours' {
+                New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Hours 4) -RepetitionDuration ([TimeSpan]::MaxValue)
+            }
+            'Daily' {
+                New-ScheduledTaskTrigger -Daily -At $TaskTime
+            }
+            'Weekly' {
+                New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $TaskTime
+            }
+        }
+        
+        # Create the principal (run as SYSTEM with highest privileges)
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        
+        # Register the task
+        [void](Register-ScheduledTask -TaskName $TaskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Description "Automated AD replication health monitoring and repair" `
+            -Force)
+        
+        Write-Information "✅ Scheduled task created successfully!" -InformationAction Continue
+        Write-Information "   Task Name: $TaskName" -InformationAction Continue
+        Write-Information "   Schedule: $TaskSchedule" -InformationAction Continue
+        Write-Information "   Command: pwsh.exe $arguments" -InformationAction Continue
+        Write-Information "" -InformationAction Continue
+        Write-Information "To manage the task:" -InformationAction Continue
+        Write-Information "   View:   Get-ScheduledTask -TaskName '$TaskName'" -InformationAction Continue
+        Write-Information "   Run:    Start-ScheduledTask -TaskName '$TaskName'" -InformationAction Continue
+        Write-Information "   Remove: Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false" -InformationAction Continue
+        
+        exit 0
+    }
+    catch {
+        Write-Error "Failed to create scheduled task: $_"
+        exit 1
+    }
+}
 
 # ============================================================================
 # GLOBAL STATE
@@ -316,6 +437,376 @@ function Invoke-WithRetry {
     # Should never reach here, but just in case
     if ($lastError) {
         throw $lastError
+    }
+}
+
+function Send-SlackAlert {
+    <#
+    .SYNOPSIS
+        Sends a formatted alert to Slack webhook.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Summary,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$WebhookUrl
+    )
+    
+    try {
+        # Determine color based on exit code
+        $color = switch ($Script:ExitCode) {
+            0 { "good" }      # Green
+            2 { "warning" }   # Yellow
+            default { "danger" } # Red
+        }
+        
+        # Determine emoji status
+        $statusEmoji = switch ($Script:ExitCode) {
+            0 { ":white_check_mark:" }
+            2 { ":warning:" }
+            3 { ":no_entry:" }
+            default { ":x:" }
+        }
+        
+        $statusText = switch ($Script:ExitCode) {
+            0 { "Healthy" }
+            2 { "Issues Detected" }
+            3 { "DCs Unreachable" }
+            default { "Error" }
+        }
+        
+        # Build Slack payload
+        $payload = @{
+            username = "AD Replication Monitor"
+            icon_emoji = ":satellite:"
+            attachments = @(
+                @{
+                    color = $color
+                    title = "$statusEmoji AD Replication Report - $statusText"
+                    fields = @(
+                        @{ title = "Mode"; value = $Summary.Mode; short = $true }
+                        @{ title = "Exit Code"; value = $Script:ExitCode; short = $true }
+                        @{ title = "Total DCs"; value = $Summary.TotalDCs; short = $true }
+                        @{ title = "Healthy"; value = "$($Summary.HealthyDCs) :white_check_mark:"; short = $true }
+                        @{ title = "Degraded"; value = "$($Summary.DegradedDCs) :warning:"; short = $true }
+                        @{ title = "Unreachable"; value = "$($Summary.UnreachableDCs) :no_entry:"; short = $true }
+                        @{ title = "Issues Found"; value = $Summary.IssuesFound; short = $true }
+                        @{ title = "Actions Performed"; value = $Summary.ActionsPerformed; short = $true }
+                        @{ title = "Duration"; value = $Summary.ExecutionTime; short = $true }
+                        @{ title = "Domain"; value = $Summary.Domain; short = $true }
+                    )
+                    footer = "AD Replication Manager"
+                    ts = [int][double]::Parse((Get-Date -UFormat %s))
+                }
+            )
+        } | ConvertTo-Json -Depth 5
+        
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType 'application/json' -ErrorAction Stop
+        Write-RepairLog "Slack notification sent successfully" -Level Verbose
+    }
+    catch {
+        Write-RepairLog "Failed to send Slack notification: $_" -Level Warning
+    }
+}
+
+function Send-TeamsAlert {
+    <#
+    .SYNOPSIS
+        Sends a formatted alert to Microsoft Teams webhook.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Summary,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$WebhookUrl
+    )
+    
+    try {
+        # Determine theme color based on exit code
+        $themeColor = switch ($Script:ExitCode) {
+            0 { "00FF00" }      # Green
+            2 { "FFA500" }      # Orange
+            3 { "FF4500" }      # Red-Orange
+            default { "FF0000" } # Red
+        }
+        
+        $statusText = switch ($Script:ExitCode) {
+            0 { "✅ Healthy" }
+            2 { "⚠️ Issues Detected" }
+            3 { "🚫 DCs Unreachable" }
+            default { "❌ Error" }
+        }
+        
+        # Build Teams adaptive card payload
+        $payload = @{
+            "@type" = "MessageCard"
+            "@context" = "https://schema.org/extensions"
+            summary = "AD Replication Report"
+            themeColor = $themeColor
+            title = "AD Replication Report - $statusText"
+            sections = @(
+                @{
+                    activityTitle = "**$($Summary.Mode)** Mode Execution"
+                    activitySubtitle = "Domain: $($Summary.Domain)"
+                    facts = @(
+                        @{ name = "Exit Code"; value = $Script:ExitCode }
+                        @{ name = "Total DCs"; value = $Summary.TotalDCs }
+                        @{ name = "Healthy"; value = "$($Summary.HealthyDCs) ✅" }
+                        @{ name = "Degraded"; value = "$($Summary.DegradedDCs) ⚠️" }
+                        @{ name = "Unreachable"; value = "$($Summary.UnreachableDCs) 🚫" }
+                        @{ name = "Issues Found"; value = $Summary.IssuesFound }
+                        @{ name = "Actions Performed"; value = $Summary.ActionsPerformed }
+                        @{ name = "Duration"; value = $Summary.ExecutionTime }
+                    )
+                }
+            )
+        } | ConvertTo-Json -Depth 5
+        
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -ErrorAction Stop
+        Write-RepairLog "Teams notification sent successfully" -Level Verbose
+    }
+    catch {
+        Write-RepairLog "Failed to send Teams notification: $_" -Level Warning
+    }
+}
+
+function Send-EmailAlert {
+    <#
+    .SYNOPSIS
+        Sends an email alert with replication summary.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Summary,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$To,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$From,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$SmtpServer
+    )
+    
+    try {
+        $statusText = switch ($Script:ExitCode) {
+            0 { "✅ Healthy" }
+            2 { "⚠️ Issues Detected" }
+            3 { "🚫 DCs Unreachable" }
+            default { "❌ Error" }
+        }
+        
+        $priority = switch ($Script:ExitCode) {
+            0 { "Normal" }
+            2 { "High" }
+            default { "High" }
+        }
+        
+        $subject = "AD Replication Alert - $statusText ($($Summary.DegradedDCs) Degraded, $($Summary.UnreachableDCs) Unreachable)"
+        
+        $body = @"
+AD Replication Manager - Execution Report
+==========================================
+
+Status: $statusText
+Exit Code: $($Script:ExitCode)
+
+SUMMARY
+-------
+Mode: $($Summary.Mode)
+Domain: $($Summary.Domain)
+Execution Time: $($Summary.ExecutionTime)
+
+DOMAIN CONTROLLER STATUS
+------------------------
+Total DCs: $($Summary.TotalDCs)
+Healthy: $($Summary.HealthyDCs) ✅
+Degraded: $($Summary.DegradedDCs) ⚠️
+Unreachable: $($Summary.UnreachableDCs) 🚫
+
+ACTIONS
+-------
+Issues Found: $($Summary.IssuesFound)
+Actions Performed: $($Summary.ActionsPerformed)
+
+REPORTS
+-------
+Output Directory: $($Summary.OutputPath)
+
+---
+This is an automated message from AD Replication Manager
+Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+        
+        $mailParams = @{
+            To = $To
+            From = $From
+            Subject = $subject
+            Body = $body
+            SmtpServer = $SmtpServer
+            Priority = $priority
+        }
+        
+        Send-MailMessage @mailParams -ErrorAction Stop
+        Write-RepairLog "Email notification sent to $To" -Level Verbose
+    }
+    catch {
+        Write-RepairLog "Failed to send email notification: $_" -Level Warning
+    }
+}
+
+function Get-HealthScore {
+    <#
+    .SYNOPSIS
+        Calculates a 0-100 health score based on DC status and replication health.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Snapshots,
+        
+        [Parameter(Mandatory = $true)]
+        [array]$Issues
+    )
+    
+    # Start with perfect score
+    $score = 100.0
+    
+    # Deduct points for DC status
+    foreach ($snapshot in $Snapshots) {
+        switch ($snapshot.Status) {
+            'Unreachable' { 
+                $score -= 10  # Major penalty for unreachable DCs
+            }
+            'Degraded' { 
+                $score -= 5   # Medium penalty for degraded DCs
+            }
+        }
+    }
+    
+    # Deduct points for issues
+    foreach ($issue in $Issues) {
+        switch ($issue.Severity) {
+            'Critical' { $score -= 3 }
+            'High' { $score -= 2 }
+            'Medium' { $score -= 1 }
+            'Low' { $score -= 0.5 }
+        }
+    }
+    
+    # Deduct for stale replication (if data available)
+    foreach ($snapshot in $Snapshots) {
+        if ($snapshot.InboundPartners) {
+            foreach ($partner in $snapshot.InboundPartners) {
+                if ($partner.LastReplicationSuccess) {
+                    $hoursSinceSuccess = ((Get-Date) - [datetime]$partner.LastReplicationSuccess).TotalHours
+                    
+                    if ($hoursSinceSuccess -gt 48) {
+                        $score -= 2  # Very stale
+                    }
+                    elseif ($hoursSinceSuccess -gt 24) {
+                        $score -= 1  # Stale
+                    }
+                }
+            }
+        }
+    }
+    
+    # Ensure score stays within 0-100 range
+    $score = [Math]::Max(0, [Math]::Min(100, $score))
+    
+    # Determine letter grade
+    $grade = switch ($score) {
+        {$_ -ge 95} { "A+ - Excellent" }
+        {$_ -ge 90} { "A - Excellent" }
+        {$_ -ge 85} { "B+ - Very Good" }
+        {$_ -ge 80} { "B - Good" }
+        {$_ -ge 75} { "C+ - Fair" }
+        {$_ -ge 70} { "C - Fair" }
+        {$_ -ge 60} { "D - Poor" }
+        default { "F - Critical" }
+    }
+    
+    return @{
+        Score = [Math]::Round($score, 2)
+        Grade = $grade
+        Timestamp = Get-Date
+    }
+}
+
+function Save-HealthHistory {
+    <#
+    .SYNOPSIS
+        Saves health score to historical CSV file for trend analysis.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$HealthScore,
+        
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Summary,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$HistoryPath
+    )
+    
+    try {
+        # Ensure directory exists
+        if (-not (Test-Path $HistoryPath)) {
+            New-Item -Path $HistoryPath -ItemType Directory -Force | Out-Null
+        }
+        
+        $historyFile = Join-Path $HistoryPath "health-history.csv"
+        
+        # Create history record
+        $record = [PSCustomObject]@{
+            Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            HealthScore = $HealthScore.Score
+            Grade = $HealthScore.Grade
+            TotalDCs = $Summary.TotalDCs
+            HealthyDCs = $Summary.HealthyDCs
+            DegradedDCs = $Summary.DegradedDCs
+            UnreachableDCs = $Summary.UnreachableDCs
+            IssuesFound = $Summary.IssuesFound
+            ActionsPerformed = $Summary.ActionsPerformed
+            Mode = $Summary.Mode
+            ExitCode = $Script:ExitCode
+        }
+        
+        # Append to CSV (create with headers if doesn't exist)
+        if (Test-Path $historyFile) {
+            $record | Export-Csv $historyFile -Append -NoTypeInformation
+        }
+        else {
+            $record | Export-Csv $historyFile -NoTypeInformation
+        }
+        
+        Write-RepairLog "Health history saved to: $historyFile" -Level Verbose
+        
+        # Also save a snapshot in JSON format for richer analysis
+        $snapshotFile = Join-Path $HistoryPath "snapshot-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+        @{
+            HealthScore = $HealthScore
+            Summary = $Summary
+            Timestamp = Get-Date -Format 'o'
+        } | ConvertTo-Json -Depth 3 | Out-File $snapshotFile
+        
+        # Keep only last 90 days of snapshots to prevent bloat
+        Get-ChildItem $HistoryPath -Filter "snapshot-*.json" | 
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-90) } |
+            Remove-Item -Force
+            
+        Write-RepairLog "Health snapshot saved to: $snapshotFile" -Level Verbose
+    }
+    catch {
+        Write-RepairLog "Failed to save health history: $_" -Level Warning
     }
 }
 
@@ -830,10 +1321,13 @@ function Export-ReplReports {
         }
         
         # JSON summary for CI
+        $elapsed = (Get-Date) - $Script:StartTime
         $summary = @{
-            ExecutionTime   = (Get-Date) - $Script:StartTime
+            Timestamp       = Get-Date -Format 'o'
+            ExecutionTime   = $elapsed.ToString('hh\:mm\:ss')
             Mode            = $Data.Mode
             Scope           = $Data.Scope
+            Domain          = $DomainName
             TotalDCs        = $Data.Snapshots.Count
             HealthyDCs      = @($Data.Snapshots | Where-Object { $_.Status -eq 'Healthy' }).Count
             DegradedDCs     = @($Data.Snapshots | Where-Object { $_.Status -eq 'Degraded' }).Count
@@ -841,6 +1335,19 @@ function Export-ReplReports {
             IssuesFound     = $Data.Issues.Count
             ActionsPerformed = if ($Data.RepairActions) { $Data.RepairActions.Count } else { 0 }
             ExitCode        = $Script:ExitCode
+            OutputPath      = $OutputDirectory
+        }
+        
+        # Calculate health score if enabled
+        if ($EnableHealthScore) {
+            $healthScore = Get-HealthScore -Snapshots $Data.Snapshots -Issues $Data.Issues
+            $summary.HealthScore = $healthScore.Score
+            $summary.HealthGrade = $healthScore.Grade
+            
+            Write-RepairLog "Health Score: $($healthScore.Score)/100 ($($healthScore.Grade))" -Level Information
+            
+            # Save to historical tracking
+            Save-HealthHistory -HealthScore $healthScore -Summary $summary -HistoryPath $HealthHistoryPath
         }
         
         $summary | ConvertTo-Json -Depth 5 | Out-File $paths.SummaryJSON -Encoding UTF8
@@ -850,7 +1357,10 @@ function Export-ReplReports {
         
         Write-RepairLog "Reports exported: $(($paths.Values | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')" -Level Information
         
-        return $paths
+        return @{
+            Paths = $paths
+            Summary = $summary
+        }
     }
     catch {
         Write-RepairLog "Failed to export reports: $_" -Level Error
@@ -912,7 +1422,7 @@ try {
         Write-RepairLog "Audit trail enabled: $transcriptPath" -Level Information
     }
     
-    Write-RepairLog "=== AD Replication Manager v3.0 ===" -Level Information
+    Write-RepairLog "=== AD Replication Manager v3.1.0 ===" -Level Information
     Write-RepairLog "Mode: $Mode | Scope: $Scope | Throttle: $Throttle" -Level Information
     
     # Pre-flight checks
@@ -1011,12 +1521,45 @@ try {
         $OutputPath = Join-Path $PWD "ADRepl-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     }
     
-    [void](Export-ReplReports -Data $executionData -OutputDirectory $OutputPath)
+    $reportResult = Export-ReplReports -Data $executionData -OutputDirectory $OutputPath
+    $summary = $reportResult.Summary
     
     # Final summary
     Write-RunSummary -Data $executionData
     
     Write-RepairLog "Reports available at: $OutputPath" -Level Information
+    
+    # Send notifications if configured
+    $shouldNotify = $false
+    switch ($EmailNotification) {
+        'OnError'  { $shouldNotify = ($Script:ExitCode -eq 4) }
+        'OnIssues' { $shouldNotify = ($Script:ExitCode -in @(2, 3, 4)) }
+        'Always'   { $shouldNotify = $true }
+        'Never'    { $shouldNotify = $false }
+    }
+    
+    if ($shouldNotify) {
+        # Send Slack notification
+        if ($SlackWebhook) {
+            Write-RepairLog "Sending Slack notification..." -Level Information
+            Send-SlackAlert -Summary $summary -WebhookUrl $SlackWebhook
+        }
+        
+        # Send Teams notification
+        if ($TeamsWebhook) {
+            Write-RepairLog "Sending Teams notification..." -Level Information
+            Send-TeamsAlert -Summary $summary -WebhookUrl $TeamsWebhook
+        }
+        
+        # Send Email notification
+        if ($EmailTo -and $SmtpServer) {
+            Write-RepairLog "Sending email notification..." -Level Information
+            Send-EmailAlert -Summary $summary -To $EmailTo -From $EmailFrom -SmtpServer $SmtpServer
+        }
+        elseif ($EmailTo -and -not $SmtpServer) {
+            Write-RepairLog "Email notification skipped: SmtpServer parameter required" -Level Warning
+        }
+    }
 }
 catch {
     Write-RepairLog "Fatal error: $_" -Level Error
