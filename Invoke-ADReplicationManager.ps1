@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 #Requires -Modules ActiveDirectory
-#Requires -RunAsAdministrator
+# Note: Admin rights recommended for full functionality, but not strictly required for read-only audit mode
 
 <#
 .NOTES
