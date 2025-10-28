@@ -1,8 +1,8 @@
-# Active Directory Replication Manager v3.0
+# Active Directory Replication Manager v3.2
 ## Documentation Index
 
-**Version:** 1.0  
-**Last Updated:** October 18, 2025  
+**Version:** 1.1  
+**Last Updated:** October 28, 2025  
 **Author:** Adrian Johnson <adrian207@gmail.com>  
 **Classification:** Internal Use
 
@@ -10,7 +10,13 @@
 
 ## 📚 Complete Documentation Suite
 
-This index provides a comprehensive guide to all available documentation for the Active Directory Replication Manager (ADRM) v3.0.
+This index provides a comprehensive guide to all available documentation for the Active Directory Replication Manager (ADRM) v3.2.
+
+### 🆕 Latest Additions (v3.2)
+- **[RELEASE-NOTES-v3.2.md](../RELEASE-NOTES-v3.2.md)** - Auto-Healing feature documentation
+- **Auto-Healing Framework** - Policy-based automated remediation
+- **Rollback Capability** - Automatic rollback of failed actions
+- **Enhanced Audit Trail** - Comprehensive healing history
 
 ---
 
