@@ -1,16 +1,17 @@
 <div align="center">
 
-# 🔄 AD Replication Manager v3.1
+# 🔄 AD Replication Manager v3.2
 
 [![PowerShell Version](https://img.shields.io/badge/PowerShell-5.1%2B%20%7C%207%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20Server-blue.svg)](https://www.microsoft.com/windows-server)
-[![Code Size](https://img.shields.io/badge/Code%20Size-1500%20lines-brightgreen.svg)](#performance-benchmarks)
+[![Code Size](https://img.shields.io/badge/Code%20Size-2000%20lines-brightgreen.svg)](#performance-benchmarks)
 [![Reduction](https://img.shields.io/badge/Code%20Reduction-72%25-success.svg)](#what-changed-migration-from-v20--v30)
-[![New Features](https://img.shields.io/badge/v3.1-Slack%20%7C%20Teams%20%7C%20Health%20Score-blue.svg)](#-whats-new-in-v31)
+[![Latest](https://img.shields.io/badge/v3.2-Auto--Healing-blue.svg)](https://github.com/adrian207/Repl/releases/tag/v3.2.0)
+[![v3.1](https://img.shields.io/badge/v3.1-Notifications-green.svg)](#-whats-new-in-v31)
 
 **Enterprise-grade Active Directory replication management tool**  
-Audit • Repair • Verify • Monitor
+Audit • Repair • Verify • Monitor • **Auto-Heal**
 
 [Quick Start](#-quick-start) • [Documentation](docs/DOCUMENTATION-INDEX.md) • [Migration Guide](docs/MIGRATION-GUIDE.md) • [API Reference](docs/API-REFERENCE.md)
 
@@ -97,6 +98,18 @@ Audit • Repair • Verify • Monitor
 </td>
 <td>
 
+### 🤖 Auto-Healing **NEW!**
+- ✅ **Policy-Based** - Conservative/Moderate/Aggressive
+- ✅ **Rollback** - Auto-rollback failures
+- ✅ **Safety Controls** - Cooldowns & limits
+- ✅ **Audit Trail** - Complete history
+- ✅ **Statistics** - Success tracking
+
+</td>
+</tr>
+<tr>
+<td>
+
 ### 📊 Reporting
 - ✅ **JSON Summary** - CI/CD ready
 - ✅ **CSV Exports** - BI integration
@@ -105,12 +118,53 @@ Audit • Repair • Verify • Monitor
 - ✅ **Transcripts** - Optional recording
 
 </td>
+<td>
+
+### 📬 Notifications **v3.1**
+- ✅ **Slack Integration** - Rich alerts
+- ✅ **Teams Integration** - Adaptive cards
+- ✅ **Email Alerts** - SMTP notifications
+- ✅ **Health Score** - 0-100 with trends
+- ✅ **Scheduled Tasks** - Auto-setup
+
+</td>
 </tr>
 </table>
 
 ---
 
-## 🆕 What's New in v3.1
+## 🆕 What's New in v3.2
+
+### 🤖 **Auto-Healing - Autonomous Remediation!**
+
+**NEW in v3.2.0:** Policy-based automated healing that fixes issues while you sleep!
+
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -Mode Repair `
+    -AutoHeal `
+    -HealingPolicy Conservative `
+    -EnableRollback `
+    -SlackWebhook "https://hooks.slack.com/..."
+```
+
+**Three Healing Policies:**
+- **Conservative** (Production-safe): Only stale replication, 30-min cooldown
+- **Moderate** (Balanced): Stale + failures, 15-min cooldown  
+- **Aggressive** (Maximum automation): All issues, 5-min cooldown
+
+**Key Features:**
+- ✅ **Intelligent eligibility checks** - Category, severity, cooldown
+- ✅ **Rollback capability** - Automatic rollback on failures
+- ✅ **Complete audit trail** - CSV + JSON history
+- ✅ **Safety controls** - Cooldowns prevent healing loops
+- ✅ **Statistics tracking** - Success rates, trends, top DCs
+
+**[Full Auto-Healing Documentation →](RELEASE-NOTES-v3.2.md)**
+
+---
+
+## 🎉 What's New in v3.1
 
 ### 🚀 Three Powerful New Features!
 
