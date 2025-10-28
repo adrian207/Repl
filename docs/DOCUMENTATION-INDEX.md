@@ -1,7 +1,7 @@
-# Active Directory Replication Manager v3.2
+# Active Directory Replication Manager v3.3
 ## Documentation Index
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Last Updated:** October 28, 2025  
 **Author:** Adrian Johnson <adrian207@gmail.com>  
 **Classification:** Internal Use
@@ -10,13 +10,18 @@
 
 ## 📚 Complete Documentation Suite
 
-This index provides a comprehensive guide to all available documentation for the Active Directory Replication Manager (ADRM) v3.2.
+This index provides a comprehensive guide to all available documentation for the Active Directory Replication Manager (ADRM) v3.3.
 
-### 🆕 Latest Additions (v3.2)
+### 🆕 Latest Additions (v3.3)
+- **[RELEASE-NOTES-v3.3.md](../RELEASE-NOTES-v3.3.md)** - Delta Mode feature documentation (40-80% faster)
+- **Delta Mode** - Intelligent caching for faster monitoring
+- **Performance Optimization** - Only checks DCs with previous issues
+- **Smart Cache Management** - Automatic expiration and full scans
+
+### 📖 Recent Releases
 - **[RELEASE-NOTES-v3.2.md](../RELEASE-NOTES-v3.2.md)** - Auto-Healing feature documentation
-- **Auto-Healing Framework** - Policy-based automated remediation
-- **Rollback Capability** - Automatic rollback of failed actions
-- **Enhanced Audit Trail** - Comprehensive healing history
+- **[RELEASE-NOTES-v3.1.md](../RELEASE-NOTES-v3.1.md)** - Notifications & monitoring features
+- **[AUTO-HEALING-GUIDE.md](AUTO-HEALING-GUIDE.md)** - Comprehensive auto-healing guide
 
 ---
 
