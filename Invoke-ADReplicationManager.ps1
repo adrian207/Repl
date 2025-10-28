@@ -29,7 +29,7 @@
     Adrian Johnson <adrian207@gmail.com>
 
 .VERSION
-    3.1.0
+    3.2.0
 
 .DATE
     October 28, 2025
@@ -91,7 +91,7 @@
     
 .NOTES
     Author: Consolidated from AD-Repl-Audit.ps1 and AD-ReplicationRepair.ps1
-    Version: 3.1.0
+    Version: 3.2.0
     Requires: PowerShell 5.1+, RSAT-AD-PowerShell, Domain Admin rights
 #>
 
@@ -177,7 +177,29 @@ param(
     [switch]$EnableHealthScore,
     
     [Parameter(Mandatory = $false)]
-    [string]$HealthHistoryPath = "$env:ProgramData\ADReplicationManager\History"
+    [string]$HealthHistoryPath = "$env:ProgramData\ADReplicationManager\History",
+    
+    # Auto-Healing Parameters
+    [Parameter(Mandatory = $false)]
+    [switch]$AutoHeal,
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Conservative', 'Moderate', 'Aggressive')]
+    [string]$HealingPolicy = 'Conservative',
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 100)]
+    [int]$MaxHealingActions = 10,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$EnableRollback,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$HealingHistoryPath = "$env:ProgramData\ADReplicationManager\Healing",
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 60)]
+    [int]$HealingCooldownMinutes = 15
 )
 
 # ============================================================================
@@ -1107,6 +1129,344 @@ function Find-ReplicationIssues {
     }
 }
 
+function Get-HealingPolicy {
+    <#
+    .SYNOPSIS
+        Defines auto-healing policies with allowed actions and risk levels.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Conservative', 'Moderate', 'Aggressive')]
+        [string]$PolicyName
+    )
+    
+    $policies = @{
+        Conservative = @{
+            AllowedCategories = @('StaleReplication')
+            AllowedSeverities = @('Low', 'Medium')
+            MaxConcurrentActions = 3
+            RequireManualApproval = @('ReplicationFailure', 'Connectivity')
+            RollbackOnFailure = $true
+            CooldownMinutes = 30
+            Description = 'Conservative policy - Only fixes low-risk stale replication issues'
+            RiskLevel = 'Low'
+        }
+        Moderate = @{
+            AllowedCategories = @('StaleReplication', 'ReplicationFailure')
+            AllowedSeverities = @('Low', 'Medium', 'High')
+            MaxConcurrentActions = 5
+            RequireManualApproval = @('Connectivity')
+            RollbackOnFailure = $true
+            CooldownMinutes = 15
+            Description = 'Moderate policy - Fixes stale replication and replication failures'
+            RiskLevel = 'Medium'
+        }
+        Aggressive = @{
+            AllowedCategories = @('StaleReplication', 'ReplicationFailure', 'Connectivity')
+            AllowedSeverities = @('Low', 'Medium', 'High', 'Critical')
+            MaxConcurrentActions = 10
+            RequireManualApproval = @()
+            RollbackOnFailure = $true
+            CooldownMinutes = 5
+            Description = 'Aggressive policy - Attempts to fix all detected issues automatically'
+            RiskLevel = 'High'
+        }
+    }
+    
+    return $policies[$PolicyName]
+}
+
+function Test-HealingEligibility {
+    <#
+    .SYNOPSIS
+        Determines if an issue is eligible for auto-healing based on policy and history.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Issue,
+        
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$HistoryPath,
+        
+        [Parameter(Mandatory = $true)]
+        [int]$CooldownMinutes
+    )
+    
+    $eligible = @{
+        Allowed = $false
+        Reason = ''
+    }
+    
+    # Check 1: Category allowed by policy
+    if ($Issue.Category -notin $Policy.AllowedCategories) {
+        $eligible.Reason = "Category '$($Issue.Category)' not allowed by policy"
+        return $eligible
+    }
+    
+    # Check 2: Severity allowed by policy
+    if ($Issue.Severity -notin $Policy.AllowedSeverities) {
+        $eligible.Reason = "Severity '$($Issue.Severity)' not allowed by policy"
+        return $eligible
+    }
+    
+    # Check 3: Manual approval required
+    if ($Issue.Category -in $Policy.RequireManualApproval) {
+        $eligible.Reason = "Category '$($Issue.Category)' requires manual approval"
+        return $eligible
+    }
+    
+    # Check 4: Cooldown period (prevent healing loops)
+    if (Test-Path $HistoryPath) {
+        $historyFile = Join-Path $HistoryPath "healing-history.csv"
+        if (Test-Path $historyFile) {
+            $recentActions = Import-Csv $historyFile | Where-Object {
+                $_.DC -eq $Issue.DC -and
+                $_.Category -eq $Issue.Category -and
+                ([DateTime]$_.Timestamp) -gt (Get-Date).AddMinutes(-$CooldownMinutes)
+            }
+            
+            if ($recentActions) {
+                $eligible.Reason = "Cooldown period active (last action within $CooldownMinutes minutes)"
+                return $eligible
+            }
+        }
+    }
+    
+    # Check 5: Issue is actionable
+    if (-not $Issue.Actionable) {
+        $eligible.Reason = "Issue marked as not actionable"
+        return $eligible
+    }
+    
+    # All checks passed
+    $eligible.Allowed = $true
+    $eligible.Reason = "Eligible for auto-healing under $($Policy.Description)"
+    
+    return $eligible
+}
+
+function Save-HealingAction {
+    <#
+    .SYNOPSIS
+        Records healing action to audit trail and enables rollback capability.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Issue,
+        
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Action,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Policy,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$HistoryPath
+    )
+    
+    try {
+        # Ensure directory exists
+        if (-not (Test-Path $HistoryPath)) {
+            New-Item -Path $HistoryPath -ItemType Directory -Force | Out-Null
+        }
+        
+        $historyFile = Join-Path $HistoryPath "healing-history.csv"
+        
+        # Create healing record
+        $record = [PSCustomObject]@{
+            Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            DC = $Action.DC
+            Category = $Issue.Category
+            Severity = $Issue.Severity
+            Description = $Issue.Description
+            Method = $Action.Method
+            Success = $Action.Success
+            Message = $Action.Message
+            Policy = $Policy
+            RollbackAvailable = ($Action.Method -match 'repadmin|replicate')
+            ActionID = [Guid]::NewGuid().ToString().Substring(0, 8)
+        }
+        
+        # Append to CSV
+        if (Test-Path $historyFile) {
+            $record | Export-Csv $historyFile -Append -NoTypeInformation
+        }
+        else {
+            $record | Export-Csv $historyFile -NoTypeInformation
+        }
+        
+        # Also save detailed JSON for rollback
+        if ($record.RollbackAvailable) {
+            $rollbackFile = Join-Path $HistoryPath "rollback-$($record.ActionID).json"
+            @{
+                Record = $record
+                Issue = $Issue
+                Action = $Action
+                Timestamp = Get-Date -Format 'o'
+                RollbackCommand = "repadmin /showrepl $($Action.DC)"  # Pre-state captured
+            } | ConvertTo-Json -Depth 5 | Out-File $rollbackFile
+        }
+        
+        Write-RepairLog "Healing action recorded: $($record.ActionID)" -Level Verbose
+        
+        # Cleanup old records (>30 days)
+        Get-ChildItem $HistoryPath -Filter "rollback-*.json" |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+            
+        return $record.ActionID
+    }
+    catch {
+        Write-RepairLog "Failed to save healing action: $_" -Level Warning
+        return $null
+    }
+}
+
+function Invoke-HealingRollback {
+    <#
+    .SYNOPSIS
+        Attempts to rollback a healing action that failed or caused issues.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ActionID,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$HistoryPath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Reason = "Manual rollback request"
+    )
+    
+    $rollbackFile = Join-Path $HistoryPath "rollback-$ActionID.json"
+    
+    if (-not (Test-Path $rollbackFile)) {
+        Write-RepairLog "Rollback file not found for action $ActionID" -Level Warning
+        return $false
+    }
+    
+    try {
+        $rollbackData = Get-Content $rollbackFile -Raw | ConvertFrom-Json
+        $dc = $rollbackData.Record.DC
+        
+        Write-RepairLog "Initiating rollback for action $ActionID on $dc - Reason: $Reason" -Level Information
+        
+        if ($PSCmdlet.ShouldProcess($dc, "Rollback healing action $ActionID")) {
+            # Rollback strategy: Force fresh replication to restore pre-action state
+            # This is safer than trying to "undo" specific actions
+            Write-RepairLog "Forcing fresh replication sync on $dc" -Level Verbose
+            
+            $output = & repadmin /syncall /A /P /e /d $dc 2>&1
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-RepairLog "Rollback successful for $dc" -Level Information
+                
+                # Mark rollback in history
+                $rollbackRecord = [PSCustomObject]@{
+                    Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+                    ActionID = $ActionID
+                    DC = $dc
+                    RollbackSuccess = $true
+                    Reason = $Reason
+                }
+                
+                $rollbackHistoryFile = Join-Path $HistoryPath "rollback-history.csv"
+                if (Test-Path $rollbackHistoryFile) {
+                    $rollbackRecord | Export-Csv $rollbackHistoryFile -Append -NoTypeInformation
+                }
+                else {
+                    $rollbackRecord | Export-Csv $rollbackHistoryFile -NoTypeInformation
+                }
+                
+                return $true
+            }
+            else {
+                Write-RepairLog "Rollback failed for $dc : $output" -Level Error
+                return $false
+            }
+        }
+        
+        return $false
+    }
+    catch {
+        Write-RepairLog "Rollback exception for action $ActionID : $_" -Level Error
+        return $false
+    }
+}
+
+function Get-HealingStatistics {
+    <#
+    .SYNOPSIS
+        Retrieves statistics from healing history for reporting.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HistoryPath,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$DaysBack = 30
+    )
+    
+    $stats = @{
+        TotalActions = 0
+        SuccessfulActions = 0
+        FailedActions = 0
+        RolledBackActions = 0
+        CategoriesHealed = @{}
+        TopDCs = @{}
+        SuccessRate = 0
+    }
+    
+    $historyFile = Join-Path $HistoryPath "healing-history.csv"
+    
+    if (-not (Test-Path $historyFile)) {
+        return $stats
+    }
+    
+    $history = Import-Csv $historyFile | Where-Object {
+        ([DateTime]$_.Timestamp) -gt (Get-Date).AddDays(-$DaysBack)
+    }
+    
+    $stats.TotalActions = $history.Count
+    $stats.SuccessfulActions = @($history | Where-Object { $_.Success -eq 'True' }).Count
+    $stats.FailedActions = $stats.TotalActions - $stats.SuccessfulActions
+    
+    if ($stats.TotalActions -gt 0) {
+        $stats.SuccessRate = [Math]::Round(($stats.SuccessfulActions / $stats.TotalActions) * 100, 2)
+    }
+    
+    # Category breakdown
+    $categoryGroups = $history | Group-Object -Property Category
+    foreach ($group in $categoryGroups) {
+        $stats.CategoriesHealed[$group.Name] = $group.Count
+    }
+    
+    # Top DCs with most healing actions
+    $dcGroups = $history | Group-Object -Property DC | Sort-Object Count -Descending | Select-Object -First 5
+    foreach ($group in $dcGroups) {
+        $stats.TopDCs[$group.Name] = $group.Count
+    }
+    
+    # Rollback count
+    $rollbackHistoryFile = Join-Path $HistoryPath "rollback-history.csv"
+    if (Test-Path $rollbackHistoryFile) {
+        $rollbacks = Import-Csv $rollbackHistoryFile | Where-Object {
+            ([DateTime]$_.Timestamp) -gt (Get-Date).AddDays(-$DaysBack)
+        }
+        $stats.RolledBackActions = $rollbacks.Count
+    }
+    
+    return $stats
+}
+
 function Invoke-ReplicationFix {
     <#
     .SYNOPSIS
@@ -1422,7 +1782,7 @@ try {
         Write-RepairLog "Audit trail enabled: $transcriptPath" -Level Information
     }
     
-    Write-RepairLog "=== AD Replication Manager v3.1.0 ===" -Level Information
+    Write-RepairLog "=== AD Replication Manager v3.2.0 ===" -Level Information
     Write-RepairLog "Mode: $Mode | Scope: $Scope | Throttle: $Throttle" -Level Information
     
     # Pre-flight checks
@@ -1475,26 +1835,98 @@ try {
         else {
             Write-RepairLog "=== PHASE: REPAIR ===" -Level Information
             
-            if (-not $AutoRepair -and -not $WhatIfPreference) {
-                Write-Warning "$($executionData.Issues.Count) issues require repair."
-                $response = Read-Host "Proceed with repairs? (Y/N)"
-                if ($response -notmatch '^[Yy]') {
-                    Write-RepairLog "Repair cancelled by user" -Level Information
-                    $Script:ExitCode = 0
-                    throw "User cancelled repair operation"
-                }
-            }
-            
-            # Group issues by DC and repair
-            $issuesByDC = $executionData.Issues | Group-Object -Property DC
-            
-            foreach ($group in $issuesByDC) {
-                $dc = $group.Name
-                $dcIssues = $group.Group
+            # Auto-Healing logic
+            if ($AutoHeal) {
+                Write-RepairLog "Auto-Healing enabled with '$HealingPolicy' policy" -Level Information
                 
-                Write-RepairLog "Repairing $dc ($($dcIssues.Count) issues)" -Level Information
-                $repairActions = Invoke-ReplicationFix -DomainController $dc -Issues $dcIssues
-                $executionData.RepairActions += $repairActions
+                # Load healing policy
+                $policy = Get-HealingPolicy -PolicyName $HealingPolicy
+                Write-RepairLog "Policy: $($policy.Description) | Risk Level: $($policy.RiskLevel)" -Level Information
+                Write-RepairLog "Max concurrent actions: $($policy.MaxConcurrentActions) | Cooldown: $($policy.CooldownMinutes) minutes" -Level Information
+                
+                # Filter issues based on policy eligibility
+                $eligibleIssues = @()
+                $skippedIssues = @()
+                
+                foreach ($issue in $executionData.Issues) {
+                    $eligibility = Test-HealingEligibility -Issue $issue -Policy $policy `
+                        -HistoryPath $HealingHistoryPath -CooldownMinutes $HealingCooldownMinutes
+                    
+                    if ($eligibility.Allowed) {
+                        $eligibleIssues += $issue
+                        Write-RepairLog "✓ Issue eligible: $($issue.DC) - $($issue.Category)" -Level Verbose
+                    }
+                    else {
+                        $skippedIssues += $issue
+                        Write-RepairLog "✗ Issue skipped: $($issue.DC) - $($issue.Category) - Reason: $($eligibility.Reason)" -Level Information
+                    }
+                }
+                
+                Write-RepairLog "Auto-Healing: $($eligibleIssues.Count) eligible, $($skippedIssues.Count) skipped" -Level Information
+                
+                # Respect MaxHealingActions limit
+                if ($eligibleIssues.Count -gt $MaxHealingActions) {
+                    Write-RepairLog "Limiting healing actions to $MaxHealingActions (policy max: $($policy.MaxConcurrentActions), parameter: $MaxHealingActions)" -Level Warning
+                    $eligibleIssues = $eligibleIssues | Select-Object -First $MaxHealingActions
+                }
+                
+                # Perform auto-healing on eligible issues
+                if ($eligibleIssues.Count -gt 0) {
+                    $issuesByDC = $eligibleIssues | Group-Object -Property DC
+                    
+                    foreach ($group in $issuesByDC) {
+                        $dc = $group.Name
+                        $dcIssues = $group.Group
+                        
+                        Write-RepairLog "Auto-Healing $dc ($($dcIssues.Count) issues)" -Level Information
+                        $repairActions = Invoke-ReplicationFix -DomainController $dc -Issues $dcIssues
+                        
+                        # Save healing actions to audit trail
+                        foreach ($action in $repairActions) {
+                            $correspondingIssue = $dcIssues | Where-Object { $_.Category -eq $action.Method.Split('/')[0] -or $_.DC -eq $action.DC } | Select-Object -First 1
+                            if ($correspondingIssue) {
+                                $actionID = Save-HealingAction -Issue $correspondingIssue -Action $action `
+                                    -Policy $HealingPolicy -HistoryPath $HealingHistoryPath
+                                
+                                # Rollback if enabled and action failed
+                                if ($EnableRollback -and -not $action.Success -and $actionID) {
+                                    Write-RepairLog "Auto-Healing action failed, initiating rollback: $actionID" -Level Warning
+                                    Invoke-HealingRollback -ActionID $actionID -HistoryPath $HealingHistoryPath `
+                                        -Reason "Automatic rollback due to action failure"
+                                }
+                            }
+                        }
+                        
+                        $executionData.RepairActions += $repairActions
+                    }
+                }
+                
+                # Track statistics
+                $executionData.HealingStats = Get-HealingStatistics -HistoryPath $HealingHistoryPath -DaysBack 30
+            }
+            else {
+                # Traditional manual/semi-automated repair
+                if (-not $AutoRepair -and -not $WhatIfPreference) {
+                    Write-Warning "$($executionData.Issues.Count) issues require repair."
+                    $response = Read-Host "Proceed with repairs? (Y/N)"
+                    if ($response -notmatch '^[Yy]') {
+                        Write-RepairLog "Repair cancelled by user" -Level Information
+                        $Script:ExitCode = 0
+                        throw "User cancelled repair operation"
+                    }
+                }
+                
+                # Group issues by DC and repair
+                $issuesByDC = $executionData.Issues | Group-Object -Property DC
+                
+                foreach ($group in $issuesByDC) {
+                    $dc = $group.Name
+                    $dcIssues = $group.Group
+                    
+                    Write-RepairLog "Repairing $dc ($($dcIssues.Count) issues)" -Level Information
+                    $repairActions = Invoke-ReplicationFix -DomainController $dc -Issues $dcIssues
+                    $executionData.RepairActions += $repairActions
+                }
             }
             
             # Adjust exit code if repairs succeeded

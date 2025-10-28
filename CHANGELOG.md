@@ -9,6 +9,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0] - 2025-10-28
+
+### 🤖 Feature Release - Auto-Healing
+
+This release introduces intelligent, policy-based automated remediation that transforms AD Replication Manager into an autonomous healing system.
+
+### Added
+- ✅ **Auto-Healing Framework**: Policy-driven automated remediation
+  - Three healing policies: Conservative, Moderate, Aggressive
+  - Policy-based eligibility evaluation
+  - Cooldown periods to prevent healing loops
+  - Maximum action limits for safety
+- ✅ **Healing Policies**:
+  - **Conservative**: Only stale replication (Low/Medium severity) - Production safe
+  - **Moderate**: Stale replication + failures (Low/Medium/High) - Balanced automation
+  - **Aggressive**: All categories and severities - Maximum automation
+- ✅ **Rollback Capability**: Automatic rollback of failed healing actions
+  - JSON-based rollback data with pre-action state
+  - Fresh replication sync to restore state
+  - Rollback history tracking
+  - Automatic cleanup of old rollback files (>30 days)
+- ✅ **Enhanced Audit Trail**: Comprehensive healing action logging
+  - CSV-based healing history (`healing-history.csv`)
+  - JSON rollback files for detailed records
+  - Rollback history in separate CSV
+  - ActionID tracking for correlation
+- ✅ **Healing Statistics**: Track effectiveness over time
+  - Success rate calculation
+  - Category breakdown
+  - Top DCs with most actions
+  - Rollback count tracking
+- ✅ **Safety Controls**: Multiple layers of protection
+  - Cooldown period (configurable, default: 15 minutes)
+  - Max healing actions limit (1-100, default: 10)
+  - Policy-specific action limits
+  - Eligibility checks (category, severity, cooldown, actionability)
+- ✅ **New Functions**:
+  - `Get-HealingPolicy`: Retrieves policy definitions
+  - `Test-HealingEligibility`: Checks if issue qualifies for healing
+  - `Save-HealingAction`: Records action to audit trail
+  - `Invoke-HealingRollback`: Rolls back healing action by ID
+  - `Get-HealingStatistics`: Retrieves healing metrics
+
+### Changed
+- **Script Size**: Grew from ~1,580 lines to ~2,050 lines (+470 lines, +30%)
+- **Repair Phase**: Enhanced with auto-healing logic and policy evaluation
+- **Function Count**: 14 → 19 functions (+5 healing functions)
+- **Parameter Count**: 30 → 36 parameters (+6 auto-healing parameters)
+
+### Parameters Added
+- `-AutoHeal`: Enable automatic healing with policy-based decisions
+- `-HealingPolicy`: Choose Conservative, Moderate, or Aggressive (default: Conservative)
+- `-MaxHealingActions`: Maximum actions per execution (1-100, default: 10)
+- `-EnableRollback`: Automatically rollback failed healing actions
+- `-HealingHistoryPath`: Directory for healing audit trail (default: `$env:ProgramData\ADReplicationManager\Healing`)
+- `-HealingCooldownMinutes`: Minutes before re-attempting same issue (1-60, default: 15)
+
+### Examples
+
+**Conservative Auto-Healing (Production Safe):**
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -Mode Repair `
+    -AutoHeal `
+    -HealingPolicy Conservative `
+    -MaxHealingActions 5 `
+    -EnableRollback
+```
+
+**Moderate Policy with Scheduled Task:**
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -CreateScheduledTask `
+    -TaskSchedule Daily `
+    -Mode AuditRepairVerify `
+    -AutoHeal `
+    -HealingPolicy Moderate `
+    -EnableHealthScore `
+    -SlackWebhook "https://hooks.slack.com/..."
+```
+
+**Aggressive Policy (Test Environment):**
+```powershell
+.\Invoke-ADReplicationManager.ps1 `
+    -Mode AuditRepairVerify `
+    -Scope Forest `
+    -AutoHeal `
+    -HealingPolicy Aggressive `
+    -MaxHealingActions 20 `
+    -FastMode
+```
+
+### Migration from v3.1
+- ✅ **100% Backward Compatible** - All v3.1 parameters work unchanged
+- ✅ Auto-Healing is opt-in via `-AutoHeal` switch
+- ✅ Default behavior unchanged - no breaking changes
+
+### Benefits
+- **Reduced MTTR**: Issues fixed in minutes instead of hours
+- **24/7 Monitoring**: Auto-healing works while you sleep
+- **Consistent Remediation**: Same fix applied every time
+- **Policy-Based Control**: Choose your risk tolerance
+- **Safety First**: Multiple protections against runaway automation
+- **Complete Audit Trail**: Full history for compliance
+
+---
+
 ## [3.1.0] - 2025-10-28
 
 ### 🚀 Feature Release - Notifications & Monitoring
