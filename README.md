@@ -1039,6 +1039,6 @@ If this tool helped you, please:
 [![PowerShell](https://img.shields.io/badge/Made%20with-PowerShell-blue.svg?logo=powershell)](https://github.com/PowerShell/PowerShell)
 [![Windows Server](https://img.shields.io/badge/Platform-Windows%20Server-0078D4.svg?logo=windows)](https://www.microsoft.com/windows-server)
 
-[⬆ Back to Top](#-ad-replication-manager-v30)
+[⬆ Back to Top](#-ad-replication-manager-v33)
 
 </div>
