@@ -3,6 +3,12 @@
 #Requires -RunAsAdministrator
 
 <#
+.NOTES
+    Optimized for PowerShell 7.5.4+ with enhanced parallel processing and retry logic.
+    Falls back gracefully to PowerShell 5.1 with serial processing.
+#>
+
+<#
 .SYNOPSIS
     Advanced Active Directory Replication Management Tool with Multi-Mode Operation
     
@@ -18,6 +24,21 @@
     - JSON summary for CI/CD integration
     - Audit trail with optional transcript logging
     - Consolidated reporting (CSV, HTML, JSON)
+
+.AUTHOR
+    Adrian Johnson <adrian207@gmail.com>
+
+.VERSION
+    3.0
+
+.DATE
+    October 28, 2025
+
+.COPYRIGHT
+    Copyright (c) 2025 Adrian Johnson. All rights reserved.
+
+.LICENSE
+    MIT License
     
 .PARAMETER Mode
     Operation mode. Default: Audit
@@ -123,6 +144,19 @@ $Script:RepairLog = [System.Collections.ArrayList]::Synchronized((New-Object Sys
 $Script:StartTime = Get-Date
 $Script:ExitCode = 0
 
+# Retry configuration
+$Script:MaxRetryAttempts = 3
+$Script:InitialDelaySeconds = 2
+$Script:MaxDelaySeconds = 30
+$Script:TransientErrorPatterns = @(
+    'RPC server is unavailable',
+    'network path was not found',
+    'connection attempt failed',
+    'timeout',
+    'server is not operational',
+    'temporarily unavailable'
+)
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -152,6 +186,111 @@ function Write-RepairLog {
         'Information' { Write-Information $Message -InformationAction Continue }
         'Warning'     { Write-Warning $Message }
         'Error'       { Write-Error $Message }
+    }
+}
+
+function Invoke-WithRetry {
+    <#
+    .SYNOPSIS
+        Executes a script block with exponential backoff retry logic.
+    
+    .DESCRIPTION
+        Retries transient failures with exponential backoff. 
+        Non-transient errors (auth, permissions) fail immediately without retry.
+        
+        Backoff formula: delay = min(InitialDelay * 2^attempt, MaxDelay)
+        Example: 2s, 4s, 8s, 16s, 30s (capped at MaxDelay)
+    
+    .PARAMETER ScriptBlock
+        The script block to execute
+    
+    .PARAMETER MaxAttempts
+        Maximum number of attempts (default: 3)
+    
+    .PARAMETER Context
+        Descriptive context for logging (e.g., "Query DC01")
+    
+    .EXAMPLE
+        Invoke-WithRetry -ScriptBlock { Get-ADReplicationPartnerMetadata -Target $dc } -Context "Query $dc"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$MaxAttempts = $Script:MaxRetryAttempts,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Context = "Operation"
+    )
+    
+    $attempt = 0
+    $lastError = $null
+    
+    while ($attempt -lt $MaxAttempts) {
+        $attempt++
+        
+        try {
+            Write-RepairLog "$Context - Attempt $attempt/$MaxAttempts" -Level Verbose
+            
+            # Execute the script block
+            $result = & $ScriptBlock
+            
+            # Success - return result
+            if ($attempt -gt 1) {
+                Write-RepairLog "$Context - Succeeded on attempt $attempt" -Level Information
+            }
+            
+            return $result
+        }
+        catch {
+            $lastError = $_
+            $errorMessage = $_.Exception.Message
+            
+            # Check if error is transient
+            $isTransient = $false
+            foreach ($pattern in $Script:TransientErrorPatterns) {
+                if ($errorMessage -match $pattern) {
+                    $isTransient = $true
+                    break
+                }
+            }
+            
+            # Check for permanent errors (don't retry)
+            $isPermanent = $errorMessage -match '(Access is denied|Logon failure|domain does not exist|cannot find|not found)'
+            
+            if ($isPermanent) {
+                Write-RepairLog "$Context - Permanent error detected, not retrying: $errorMessage" -Level Warning
+                throw
+            }
+            
+            if (-not $isTransient) {
+                Write-RepairLog "$Context - Non-transient error, not retrying: $errorMessage" -Level Warning
+                throw
+            }
+            
+            # Transient error - calculate backoff and retry
+            if ($attempt -lt $MaxAttempts) {
+                # Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
+                $delay = [Math]::Min(
+                    $Script:InitialDelaySeconds * [Math]::Pow(2, $attempt - 1),
+                    $Script:MaxDelaySeconds
+                )
+                
+                Write-RepairLog "$Context - Transient error on attempt $attempt/$MaxAttempts, retrying in $delay seconds: $errorMessage" -Level Warning
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                Write-RepairLog "$Context - Failed after $MaxAttempts attempts: $errorMessage" -Level Error
+                throw
+            }
+        }
+    }
+    
+    # Should never reach here, but just in case
+    if ($lastError) {
+        throw $lastError
     }
 }
 

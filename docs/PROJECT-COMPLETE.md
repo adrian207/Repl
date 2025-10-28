@@ -1,5 +1,12 @@
 # ✅ Project Complete: AD Replication Manager v3.0
 
+**Version:** 1.0  
+**Last Updated:** October 28, 2025  
+**Author:** Adrian Johnson <adrian207@gmail.com>  
+**Classification:** Internal Use
+
+---
+
 ## What Was Delivered
 
 Your two overlapping AD replication scripts have been successfully consolidated into a single, production-ready PowerShell module with all requested improvements implemented.
@@ -394,4 +401,24 @@ See `MIGRATION-GUIDE.md` for detailed troubleshooting.
 **You asked for a refactored, consolidated script with all improvements—you got exactly that. Ready to deploy! 🚀**
 
 For questions, start with `README-ADReplicationManager.md` or `MIGRATION-GUIDE.md`.
+
+---
+
+## Document Information
+
+**Prepared by:**  
+Adrian Johnson  
+Email: adrian207@gmail.com  
+Role: Systems Architect / PowerShell Developer  
+Organization: Enterprise IT Operations
+
+**Version History:**
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2025-10-28 | Adrian Johnson | Initial project completion summary |
+
+---
+
+**Copyright © 2025 Adrian Johnson. All rights reserved.**
 

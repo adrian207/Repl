@@ -1,5 +1,12 @@
 # Migration Guide: v2.0 → v3.0
 
+**Version:** 1.0  
+**Last Updated:** October 28, 2025  
+**Author:** Adrian Johnson <adrian207@gmail.com>  
+**Classification:** Internal Use
+
+---
+
 ## Quick Reference
 
 | Old Command (v2.0) | New Command (v3.0) |
@@ -375,4 +382,24 @@ Migration is complete when:
 - [ ] Team trained on new parameters
 - [ ] Documentation updated
 - [ ] Old scripts archived (not deleted)
+
+---
+
+## Document Information
+
+**Prepared by:**  
+Adrian Johnson  
+Email: adrian207@gmail.com  
+Role: Systems Architect / PowerShell Developer  
+Organization: Enterprise IT Operations
+
+**Version History:**
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2025-10-28 | Adrian Johnson | Initial migration guide for v2.0 to v3.0 |
+
+---
+
+**Copyright © 2025 Adrian Johnson. All rights reserved.**
 

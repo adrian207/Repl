@@ -1,5 +1,12 @@
 # Before & After Comparison: Visual Examples
 
+**Version:** 1.0  
+**Last Updated:** October 28, 2025  
+**Author:** Adrian Johnson <adrian207@gmail.com>  
+**Classification:** Internal Use
+
+---
+
 ## Side-by-Side Code Examples
 
 ### Example 1: Logging
